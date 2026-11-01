@@ -1,0 +1,473 @@
+#!/bin/bash
+# Monterey UltraLite OFFLINE v6.0 -- iMac10,1 / macOS Sierra 10.12.6
+# One controller used across Sierra, Recovery and Monterey. This is an
+# experimental no-USB workflow, NOT an unattended or guaranteed installation.
+# Important: the original Sierra and shared EFI are on the only physical HDD.
+set -euo pipefail
+umask 022
+
+BASE="/Users/Shared/Monterey-UltraLite-Offline-v6"
+MASTER="/Users/Shared/Monterey-UltraLite-v4/Monterey-UltraLite-Master.command"
+GPT_TOOL="/Users/Shared/Monterey-UltraLite-Partition-v5.txt"
+MONTEREY_APP="/Applications/Install macOS Monterey.app"
+INSTALL_MEDIA="$MONTEREY_APP/Contents/Resources/createinstallmedia"
+SIERRA_SECTORS=1367187496
+RECOVERY_SECTORS=1269536
+INST_START=1368866672
+INST_SECTORS=67108864
+MON_START=1435975536
+MON_SECTORS=517285888
+INST_BYTES=$((INST_SECTORS*512))
+MON_BYTES=$((MON_SECTORS*512))
+
+say() { printf '%s\n' "$*"; }
+stop() { say "STOP: $*" >&2; exit 1; }
+need() { [ -x "$1" ] || stop "Missing executable: $1"; }
+version() { /usr/bin/sw_vers -productVersion; }
+model() { /usr/sbin/sysctl -n hw.model; }
+check_model() { [ "$(model)" = iMac10,1 ] || stop "Expected iMac10,1; got $(model)"; }
+check_sierra() {
+  check_model
+  case "$(version)" in 10.12.*) ;; *) stop "This phase requires Sierra 10.12.x; got $(version)";; esac
+  [ "$(/usr/sbin/diskutil info / | /usr/bin/sed -n 's/^[[:space:]]*Device Identifier:[[:space:]]*//p' | /usr/bin/head -1)" = disk0s2 ] || stop 'Current boot volume is not Sierra disk0s2.'
+}
+check_monterey() {
+  check_model
+  case "$(version)" in 12.*) ;; *) stop "First-boot phase requires Monterey 12.x; got $(version)";; esac
+  /usr/sbin/diskutil info / | /usr/bin/grep -qi APFS || stop 'Current boot volume is not APFS.'
+  [ "$(id -u)" -ne 0 ] || stop 'Run firstboot as the normal user, not with sudo.'
+}
+confirm() {
+  say "Enter EXACTLY: $1"
+  local response
+  IFS= read -r response || stop 'No confirmation.'
+  [ "$response" = "$1" ] || stop 'Confirmation not supplied.'
+}
+
+# Only accept the GPT geometry from the known 2026-11-01 full disk report.
+gpt_text() { /usr/bin/sudo /usr/sbin/gpt -r show disk0; }
+assert_gpt_entry() {
+  printf '%s\n' "$GPT" | /usr/bin/awk -v b="$1" -v sz="$2" -v i="$3" -v typ="$4" \
+    '$1==b && $2==sz && $3==i && $4=="GPT" && $5=="part" && $7==typ {ok=1} END{exit !ok}' || stop "GPT partition #$3 differs from expected geometry."
+}
+assert_gpt() {
+  GPT="$(gpt_text)" || stop 'Unable to read GPT.'
+  assert_gpt_entry 40 409600 1 C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+  assert_gpt_entry 409640 "$SIERRA_SECTORS" 2 48465300-0000-11AA-AA11-00306543ECAC
+  assert_gpt_entry 1367597136 "$RECOVERY_SECTORS" 3 426F6F74-0000-11AA-AA11-00306543ECAC
+}
+assert_new_entries() {
+  assert_gpt
+  assert_gpt_entry "$INST_START" "$INST_SECTORS" 4 48465300-0000-11AA-AA11-00306543ECAC
+  assert_gpt_entry "$MON_START" "$MON_SECTORS" 5 48465300-0000-11AA-AA11-00306543ECAC
+  local count
+  count="$(printf '%s\n' "$GPT" | /usr/bin/awk '$4=="GPT" && $5=="part"{n++} END{print n+0}')"
+  [ "$count" = 5 ] || stop "Expected five GPT partitions, found $count."
+}
+
+check() {
+  check_model
+  say "=== OFFLINE v6 / $(version) ==="
+  /usr/sbin/diskutil list disk0
+  say '=== GPT (read only, may request admin password) ==='
+  gpt_text || true
+  say '=== Installers and staged tools ==='
+  /bin/ls -ld "$MONTEREY_APP" "$MASTER" "$GPT_TOOL" "$BASE" 2>&1 || true
+  say '=== Recovery/backups ==='
+  /usr/bin/tmutil latestbackup 2>&1 || true
+}
+
+prepare() {
+  check_sierra
+  [ "$(id -u)" -ne 0 ] || stop 'Run prepare WITHOUT sudo.'
+  [ -f "$GPT_TOOL" ] || stop 'Partition v5 not staged; run: sudo bash ~/Downloads/Monterey-UltraLite-Partition-v5.txt stage'
+  [ -f "$MASTER" ] || stop 'Master v4.1 not staged; run its stage command first.'
+  [ -x "$INSTALL_MEDIA" ] || stop 'Monterey installer missing or incomplete.'
+  assert_gpt
+  /bin/mkdir -p "$BASE"
+  /bin/cp "$0" "$BASE/Monterey-UltraLite-OFFLINE-v6.txt"
+  /bin/chmod 644 "$BASE/Monterey-UltraLite-OFFLINE-v6.txt"
+  if [ -s "$HOME/Monterey-UltraLite/OpenCore-Patcher-2.5.1.pkg" ]; then
+    /bin/cp "$HOME/Monterey-UltraLite/OpenCore-Patcher-2.5.1.pkg" "$BASE/OpenCore-Patcher.pkg"
+    say 'OCLP installer package copied for use from Monterey.'
+  else
+    say 'WARNING: Local OCLP package not found. Monterey post-install root patches may require a new download.'
+  fi
+  /usr/bin/sed -n "/^: <<'MLU_EMBEDDED_GUIDE'$/,/^MLU_EMBEDDED_GUIDE$/p" "$0" | /usr/bin/sed '1d;$d' > "$BASE/OFFLINE-GUIDE.txt"
+  [ -s "$BASE/OFFLINE-GUIDE.txt" ] || stop 'Embedded guide extraction failed; no reboot yet.'
+  /bin/cp "$BASE/OFFLINE-GUIDE.txt" "$HOME/Desktop/Monterey-UltraLite-OFFLINE-GUIDE.txt"
+  say 'Complete offline guide installed on Sierra Desktop.'
+  say "OFFLINE SCRIPT SAVED: $BASE/Monterey-UltraLite-OFFLINE-v6.txt"
+  say 'Now use the OFFLINE GUIDE. This step changed NO partitions or EFI.'
+}
+
+recovery() {
+  # Run only from Recovery Terminal, from a copy in /tmp.
+  check_model
+  [ "$(id -u)" -eq 0 ] || stop 'Recovery provisioning requires a root shell.'
+  current="$(/usr/sbin/diskutil info / 2>/dev/null | /usr/bin/sed -n 's/^[[:space:]]*Device Identifier:[[:space:]]*//p' | /usr/bin/head -1)"
+  [ "$current" != disk0s2 ] || stop 'You are booted into Sierra; do not write GPT here.'
+  [ -f /tmp/mlu-v5.txt ] || stop 'Missing staged v5 in /tmp. Consult offline guide.'
+  say 'Delegating partition operation to validated-geometry v5 script.'
+  /bin/bash /tmp/mlu-v5.txt provision
+  say 'GPT attempt finished. Read the exact v5 output and reboot to Sierra only if both entries verified.'
+}
+
+# Finds an ONLY-on-disk0 HFS+ partition of the exact known byte size.
+# Disk Utility sometimes presents physical slice numbers in a different order
+# from GPT indexes; we NEVER derive slice IDs from GPT indices.
+identify_partition() {
+  local expected="$1" candidate bytes matches="" count=0
+  for candidate in $(/usr/sbin/diskutil list disk0 | /usr/bin/awk '/Apple_HFS/ {print $NF}' | /usr/bin/grep '^disk0s[0-9][0-9]*$'); do
+    case "$candidate" in disk0s1|disk0s2|disk0s4) continue;; esac
+    bytes="$(/usr/sbin/diskutil info "$candidate" | /usr/bin/awk -F '[()]' '/Disk Size:/ {split($2,p," ");print p[1];exit}')"
+    if [ "$bytes" = "$expected" ]; then
+      matches="$candidate"
+      count=$((count+1))
+    fi
+  done
+  [ "$count" -eq 1 ] || stop "Could not uniquely identify new disk0 slice of $expected bytes (found $count). STOP."
+  printf '%s\n' "$matches"
+}
+
+# Verify a named volume by exact size, never by name alone.
+verify_named() {
+  local name="$1" expected="$2" info id bytes
+  info="$(/usr/sbin/diskutil info "/Volumes/$name")" || stop "$name is not mounted."
+  id="$(printf '%s\n' "$info" | /usr/bin/sed -n 's/^[[:space:]]*Device Identifier:[[:space:]]*//p' | /usr/bin/head -1)"
+  case "$id" in disk0s1|disk0s2|disk0s4|disk1*|'') stop "Unsafe target identifier $id for $name";; esac
+  case "$id" in disk0s*) ;; *) stop "$name must be on disk0";; esac
+  bytes="$(printf '%s\n' "$info" | /usr/bin/awk -F '[()]' '/Disk Size:/ {split($2,p," ");print p[1];exit}')"
+  [ "$bytes" = "$expected" ] || stop "$name unexpected size ($bytes vs $expected)."
+  printf '%s\n' "$id"
+}
+
+efi_backup() {
+  local mountpoint
+  /usr/bin/sudo /usr/sbin/diskutil mount disk0s1 >/dev/null || true
+  mountpoint="$(/usr/sbin/diskutil info disk0s1 | /usr/bin/sed -n 's/^[[:space:]]*Mount Point:[[:space:]]*//p' | /usr/bin/head -1)"
+  [ -n "$mountpoint" ] && [ -d "$mountpoint" ] || stop 'Could not mount EFI; do not install OpenCore.'
+  /bin/mkdir -p "$BASE/EFI-BACKUP-BEFORE-OCLP"
+  /usr/bin/sudo /usr/bin/ditto "$mountpoint" "$BASE/EFI-BACKUP-BEFORE-OCLP" || stop 'EFI backup failed.'
+  say "EFI copied to $BASE/EFI-BACKUP-BEFORE-OCLP (SAME DISK; not a disaster backup)"
+}
+
+# On Sierra after Recovery GPT operations. This deliberately does not run OCLP
+# or touch the shared EFI except mounting it READ-ONLY for backup copies.
+finish() {
+  check_sierra
+  [ "$(id -u)" -ne 0 ] || stop 'Run finish without sudo.'
+  [ -x "$INSTALL_MEDIA" ] || stop 'Monterey createinstallmedia not found.'
+  assert_new_entries
+  [ -f "$BASE/Monterey-UltraLite-OFFLINE-v6.txt" ] || stop 'Run prepare first.'
+  # A previous invocation might already have created the Apple installer.
+  # Never overwrite it on a re-run.
+  if /usr/sbin/diskutil info '/Volumes/Install macOS Monterey' >/dev/null 2>&1; then
+    verify_named 'Install macOS Monterey' "$INST_BYTES" >/dev/null
+    /usr/sbin/diskutil info '/Volumes/MLU-Monterey' >/dev/null 2>&1 || stop 'Installer exists but Monterey destination is missing.'
+    verify_named 'MLU-Monterey' "$MON_BYTES" >/dev/null
+    say 'Apple installer and Monterey destination already exist. No formatting or writing.'
+    efi_backup
+    /usr/bin/open -a OpenCore-Patcher || true
+    return 0
+  fi
+  say 'Both new GPT entries verified. Formatting only the two new partitions.'
+  confirm 'FORMAT ONLY THE TWO NEW PARTITIONS'
+  local installer_id monterey_id
+  installer_id="$(identify_partition "$INST_BYTES")"
+  monterey_id="$(identify_partition "$MON_BYTES")"
+  [ "$installer_id" != "$monterey_id" ] || stop 'Partition identifiers collide.'
+  say "Exact-size slice IDs: installer=$installer_id, Monterey=$monterey_id"
+  # Don't erase a previously initialized volume if finish has been rerun.
+  if /usr/sbin/diskutil info /Volumes/MLU-Installer >/dev/null 2>&1; then
+    [ "$(verify_named MLU-Installer "$INST_BYTES")" = "$installer_id" ] || stop 'Installer name/device mismatch.'
+    say 'Installer volume already formatted; leaving intact.'
+  else
+    /usr/bin/sudo /usr/sbin/diskutil eraseVolume JHFS+ MLU-Installer "$installer_id" || stop 'Installer formatting failed. STOP.'
+  fi
+  if /usr/sbin/diskutil info /Volumes/MLU-Monterey >/dev/null 2>&1; then
+    [ "$(verify_named MLU-Monterey "$MON_BYTES")" = "$monterey_id" ] || stop 'Monterey name/device mismatch.'
+    say 'Monterey volume already formatted; leaving intact.'
+  else
+    /usr/bin/sudo /usr/sbin/diskutil eraseVolume JHFS+ MLU-Monterey "$monterey_id" || stop 'Monterey formatting failed. STOP.'
+  fi
+  [ "$(verify_named MLU-Installer "$INST_BYTES")" = "$installer_id" ] || stop 'Installer identity changed.'
+  [ "$(verify_named MLU-Monterey "$MON_BYTES")" = "$monterey_id" ] || stop 'Monterey identity changed.'
+  efi_backup
+  if [ -e '/Volumes/Install macOS Monterey' ]; then
+    say 'An installer volume already exists. Not rewriting it.'
+  else
+    say 'Apple createinstallmedia will ERASE ONLY MLU-Installer, verified by physical size and slice.'
+    confirm 'CREATE MONTEREY INSTALLER'
+    /usr/bin/sudo "$INSTALL_MEDIA" --volume /Volumes/MLU-Installer --applicationpath "$MONTEREY_APP" --nointeraction || stop 'createinstallmedia failed. Do not erase Sierra or rerun partitioning.'
+  fi
+  say 'NEXT: OPENCORE GUI is required to build an EFI boot configuration for iMac10,1.'
+  say 'Consult the offline guide BEFORE rebooting. OpenCore will modify the shared internal EFI.'
+  /usr/bin/open -a OpenCore-Patcher || true
+}
+
+
+install_patcher() {
+  check_monterey
+  local mounted package
+  mounted="$(/usr/sbin/diskutil info disk0s2 | /usr/bin/sed -n 's/^[[:space:]]*Mount Point:[[:space:]]*//p' | /usr/bin/head -1)"
+  if [ -z "$mounted" ] || [ "$mounted" = 'Not mounted' ]; then
+    /usr/sbin/diskutil mount disk0s2 || stop 'Could not mount Sierra.'
+    mounted="$(/usr/sbin/diskutil info disk0s2 | /usr/bin/sed -n 's/^[[:space:]]*Mount Point:[[:space:]]*//p' | /usr/bin/head -1)"
+  fi
+  package="$mounted/Users/Shared/Monterey-UltraLite-Offline-v6/OpenCore-Patcher.pkg"
+  [ -s "$package" ] || stop 'Staged OCLP package not found. Locate the original OCLP PKG on Sierra.'
+  /usr/sbin/pkgutil --check-signature "$package" || stop 'Package signature check failed.'
+  say 'This installs the downloaded OCLP package into CURRENT MONTEREY only, not Sierra.'
+  confirm 'INSTALL OPENCORE PATCHER IN MONTEREY'
+  /usr/bin/sudo /usr/sbin/installer -pkg "$package" -target / || stop 'OCLP package installation failed.'
+  /usr/bin/open -a OpenCore-Patcher || true
+  say 'In OCLP: Post-Install Root Patch -> Start Root Patching -> Reboot.'
+}
+
+firstboot() {
+  check_monterey
+  # Sierra HFS+ must be mounted from Monterey to reach existing stage files.
+  local mounted
+  mounted="$(/usr/sbin/diskutil info disk0s2 | /usr/bin/sed -n 's/^[[:space:]]*Mount Point:[[:space:]]*//p' | /usr/bin/head -1)"
+  if [ -z "$mounted" ] || [ "$mounted" = 'Not mounted' ]; then
+    /usr/sbin/diskutil mount disk0s2 || stop 'Could not mount Sierra volume.'
+    mounted="$(/usr/sbin/diskutil info disk0s2 | /usr/bin/sed -n 's/^[[:space:]]*Mount Point:[[:space:]]*//p' | /usr/bin/head -1)"
+  fi
+  [ -f "$mounted/Users/Shared/Monterey-UltraLite-v4/Monterey-UltraLite-Master.command" ] || stop 'Staged Monterey master not found on Sierra.'
+  /bin/bash "$mounted/Users/Shared/Monterey-UltraLite-v4/Monterey-UltraLite-Master.command" firstboot
+  say 'First-boot preference profile and desktop controls installed.'
+  say 'This does NOT enable unverified Target Display Mode, AirPlay 2 receiver, Handoff or Universal Control.'
+}
+
+usage() {
+  cat <<'HELP'
+MONTEREY ULTRALITE OFFLINE v6 -- COMMANDS
+  prepare   Run ONCE in Sierra before reboot; stages everything locally
+  recovery  Run ONLY from macOS Recovery after copying the script to /tmp
+  finish    Run in Sierra after recovery partitions were successfully created
+  install-patcher Run in Monterey to install staged OCLP package before root patches
+  firstboot Run in Monterey after OCLP root patches and reboot
+  check     Read-only status and GPT map
+
+There is NO safe one-shot command that crosses Recovery, Sierra, OpenCore,
+Apple's installer and Monterey without user input on this hardware.
+Read the downloaded OFFLINE GUIDE before restarting.
+HELP
+}
+
+case "${1:-help}" in
+  prepare) prepare;;
+  recovery) recovery;;
+  finish) finish;;
+  install-patcher) install_patcher;;
+  firstboot) firstboot;;
+  check) check;;
+  help|-h|--help) usage;;
+  *) usage; exit 2;;
+esac
+
+: <<'MLU_EMBEDDED_GUIDE'
+MONTEREY ULTRALITE -- COMPLETE OFFLINE INSTALLATION GUIDE, VERSION 6.0
+2026-11-01 | iMac10,1 | Sierra 10.12.6 | Core 2 Duo 3.06 GHz | 4 GB RAM
+ATI Radeon HD 4670 256MB | Seagate 1TB HDD | NO USB | NO EXTERNAL BACKUP
+
+READ BEFORE STARTING
+-------------------
+This is an experimental installation on unsupported hardware using an INTERNAL
+installer partition. It cannot be guaranteed to work. Do not try to install
+Monterey into Macintosh HD or the entire physical disk. The goal is to
+retain Sierra for Target Display Mode. Native Target Display Mode under
+Monterey is NOT restored by these scripts and may never work on this GPU.
+
+Sierra originally occupies disk0s2 (700GB); Sierra Recovery is 650MB; EFI
+is disk0s1. A previously verified gap starts at sector 1368866672. The
+partition v5 tool checks exact GPT boundaries before any write. If
+anything differs, STOP. Never use gpt -f or diskutil eraseDisk disk0.
+The existing Sierra disk has no independent backup. Even guarded partition
+operations can destroy Sierra. If that would be unacceptable, STOP.
+
+WHAT YOU NEED LOCALLY
+---------------------
+- /Applications/Install macOS Monterey.app (previously confirmed about 12GB)
+- /Applications/OpenCore-Patcher.app (previously installed in Sierra)
+- /Users/Shared/Monterey-UltraLite-Partition-v5.txt (already staged)
+- /Users/Shared/Monterey-UltraLite-v4/Monterey-UltraLite-Master.command
+  (already staged; its Sierra partitioning commands MUST NOT be used)
+- ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt (new orchestrator)
+- ~/Downloads/Monterey-UltraLite-OFFLINE-GUIDE-v6.txt (this guide)
+
+PHASE 1 -- BEFORE RESTARTING, IN SIERRA
+---------------------------------------
+Download BOTH new .txt files from ChatGPT. Then run:
+
+  bash ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt prepare
+
+This saves the orchestrator and (when downloaded) this guide under
+/Users/Shared/Monterey-UltraLite-Offline-v6/ and puts a copy of the guide
+on the Sierra Desktop. If the local OCLP .pkg is present it is copied for
+later installation in Monterey. Preparation must report success before
+restarting. It does not change the GPT, EFI or Sierra settings.
+
+PHASE 2 -- IN SIERRA RECOVERY (COMMAND-R)
+-----------------------------------------
+Restart the iMac and hold Command-R. For Bluetooth keyboard startup key
+issues use a wired keyboard. In Recovery, open Utilities -> Terminal.
+
+Paste EACH of these four lines (they are also safe to paste as a block):
+
+  diskutil mount disk0s2
+  cp "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" /tmp/mlu-v6.txt
+  cp "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Partition-v5.txt" /tmp/mlu-v5.txt
+  bash /tmp/mlu-v6.txt recovery
+
+If disk0s2 reports 'already mounted', that is OK. If the copy fails,
+inspect `ls /Volumes` and use the EXACT name of the Sierra volume.
+No change has occurred unless you type the word PROVISION into the v5
+confirmation prompt. Inspect its output. It must report BOTH expected new
+GPT entries verified. If it fails at any point, STOP and reboot Sierra;
+never force unmounts or repeat blindly.
+
+Expected NEW entries:
+  index 4: 32GiB installer, first sector 1368866672
+  index 5: ~264.85GB Monterey, first sector 1435975536
+Original EFI, Sierra and Recovery GPT entries must remain unchanged.
+
+Restart back into Sierra (Apple menu -> Restart or `reboot`).
+
+PHASE 3 -- BACK IN SIERRA, FORMAT NEW VOLUMES / CREATE INSTALLER
+-----------------------------------------------------------------
+
+  bash ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt finish
+
+The tool verifies 5 exact GPT entries and uniquely identifies the new
+slices by their FULL BYTE SIZES, never guessing disk0s3 vs disk0s5.
+The confirmation phrase is:
+
+  FORMAT ONLY THE TWO NEW PARTITIONS
+
+It formats ONLY the exact-size NEW partitions as HFS+ named MLU-Installer
+and MLU-Monterey, and saves a same-disk copy of EFI. This EFI copy is NOT
+an external backup. For the next confirmation phrase, enter:
+
+  CREATE MONTEREY INSTALLER
+
+Apple's createinstallmedia then erases ONLY the verified MLU-Installer
+volume and writes the official Monterey installer. Because Sierra 10.12.6
+is the source OS, the script includes Apple's --applicationpath parameter.
+The source installer must already be in /Applications.
+
+If createinstallmedia reports an error, do NOT format Sierra, do NOT use
+OCLP's 'Create macOS Installer' with the whole internal disk, and do NOT
+rerun the GPT stage. Resolve the installer error first.
+
+PHASE 4 -- OPENCORE: REQUIRED ONE-TIME GUI ACTION
+--------------------------------------------------
+The finish script opens OpenCore-Patcher. If it doesn't open, run:
+
+  open -a OpenCore-Patcher
+
+In OCLP select:
+  Build and Install OpenCore -> Build OpenCore -> Install to disk ->
+  INTERNAL 1TB disk0 -> EXISTING EFI partition disk0s1.
+
+This changes the SHARED EFI for Sierra and Monterey, and can affect boot
+selection / Target Display Mode. The script has copied EFI to
+/Users/Shared/Monterey-UltraLite-Offline-v6/EFI-BACKUP-BEFORE-OCLP on the
+same drive. You are accepting the bootloader risk by continuing.
+
+DO NOT select 'Create macOS Installer' in OCLP for disk0. Its workflow can
+erase a whole disk. We already used Apple's installer on the separate
+installer volume. Do not use 'Erase Disk' anywhere on disk0.
+
+Once OpenCore reports successful install, RESTART, hold OPTION (Alt),
+select EFI Boot, then within the OpenCore boot picker select the entry
+'Install macOS Monterey'. If EFI Boot or the installer is missing, STOP,
+try booting the original 'Macintosh HD' Sierra volume directly.
+
+PHASE 5 -- MACOS MONTEREY INSTALLER (MANUAL DISK SELECTION)
+----------------------------------------------------------
+When installer opens, install ONLY to MLU-Monterey (NOT Macintosh HD).
+If the Monterey destination must be reformatted as APFS, open Disk
+Utility and select ONLY the MLU-Monterey VOLUME, not the parent Seagate
+physical disk, Macintosh HD, EFI or Recovery. Erase that one volume as
+APFS, name it MLU-Monterey. Then return to the Monterey installer and
+select it as the destination.
+
+The installation can reboot several times. On subsequent boots, if it
+returns to the first installer screen, boot with OPTION -> EFI Boot ->
+OpenCore picker -> 'macOS Installer' or 'MLU-Monterey' (grey disk icon),
+NOT the initial 'Install macOS Monterey' entry. Avoid touching Sierra.
+
+PHASE 6 -- FIRST BOOT INTO MONTEREY, OCLP ROOT PATCHES
+------------------------------------------------------
+Monterey may be slow and Wi-Fi may not work until OCLP post-install root
+patches are applied. Open Monterey Terminal and run:
+
+  diskutil mount disk0s2
+  bash "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" install-patcher
+
+If the disk was already mounted, an 'already mounted' notice is fine.
+The install-patcher command installs the already-downloaded OCLP package
+from Sierra, if available, into Monterey and opens the OCLP application.
+In OCLP choose 'Post-Install Root Patch' -> 'Start Root Patching'. Reboot
+when it completes. This is essential for the non-Metal HD 4670 graphics.
+Internet may be required for OCLP payloads; if Wi-Fi is absent use wired
+Ethernet or a compatible tethering option.
+
+If the staged OCLP .pkg was not copied in Phase 1, the firstboot stage
+CANNOT fix it. Find the original file on Sierra or download a genuine
+OCLP PKG from the official Dortania GitHub release (not third parties).
+
+PHASE 7 -- LIGHTWEIGHT DESKTOP / APPLE SERVICES
+-----------------------------------------------
+AFTER root patches and reboot, on Monterey run:
+
+  bash "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" firstboot
+
+This calls the previously staged v4.1 first-boot profile, disables some
+UI animation and visual effects, saves preferences for restoration and
+creates a 'Monterey UltraLite' Desktop folder. It intentionally retains
+Safari, Photos, Spotlight, AirDrop, Bluetooth and AirPlay audio OUTPUT.
+The master script includes desktop controls to check performance, restore
+preferences, inspect Target Display Mode, and attempt optional Codex CLI
+compatibility checks. It does not strip Apple system frameworks.
+
+CURRENT FEATURE REALITY
+-----------------------
+- Sierra Target Display Mode: currently the known working arrangement.
+- Monterey Target Display Mode: UNVERIFIED, not implemented; 2010 SMC
+  experiments must NOT be run blindly on this 2009 hardware.
+- AirPlay audio OUTPUT to HomePods: services preserved, not yet tested.
+- Native AirPlay 2 audio RECEIVER: not enabled/verified.
+- AirPlay VIDEO receiving: UxPlay is a candidate; not installed and not
+  performance-verified on this Mac.
+- AirDrop: Atheros AR9280 reported support under Sierra; iOS AirDrop
+  compatibility is unverified.
+- Handoff / Universal Control: original Bluetooth 2.1 lacks BLE, so
+  native functionality is NOT unlocked by this installation.
+- Codex CLI: an optional compatibility experiment, not preinstalled.
+
+EMERGENCY / FAILURE RECOVERY
+----------------------------
+If partitioning fails: STOP. Do not run formatting, GPT commands or force
+unmounts. Try rebooting directly to Sierra.
+If OpenCore/Monterey fails to boot: restart holding OPTION, then choose
+original Macintosh HD / Sierra, NOT EFI Boot if direct boot is available.
+If Monterey is unusable: keep Sierra; do not delete Sierra, Recovery or
+EFI. Do not attempt untested SMC register writes to force TDM.
+If EFI is damaged: the only saved EFI copy is ON THE SAME HDD. Restoring
+EFI is an expert recovery task, not automated by this guide.
+If a disk reports errors, do not retry destructive commands.
+
+OFFICIAL DOCUMENTATION (available with an internet connection)
+--------------------------------------------------------------
+Apple installer: https://support.apple.com/101578
+OCLP installer: https://dortania.github.io/OpenCore-Legacy-Patcher/INSTALLER.html
+OCLP build: https://dortania.github.io/OpenCore-Legacy-Patcher/BUILD.html
+OCLP boot: https://dortania.github.io/OpenCore-Legacy-Patcher/BOOT.html
+OCLP post install: https://dortania.github.io/OpenCore-Legacy-Patcher/POST-INSTALL.html
+
+Reminder: No 'zero-error' guarantee is possible for this unsupported,
+no-USB, single-disk workflow. Stop at any unexpected result.
+MLU_EMBEDDED_GUIDE
