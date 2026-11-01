@@ -1,0 +1,18 @@
+#!/bin/sh
+# macOS Monterey installer: read-only command check.
+# Does NOT install, erase, repartition or write any disks.
+echo '=== Monterey installer read-only check ==='
+date
+echo '=== Disk layout (read-only) ==='
+diskutil list disk0
+echo '=== startosinstall --usage ==='
+for app in "/Volumes/Image Volume/Install macOS Monterey.app" "/Volumes/Install macOS Monterey/Install macOS Monterey.app" "/Applications/Install macOS Monterey.app"; do
+  exe="$app/Contents/Resources/startosinstall"
+  if [ -x "$exe" ]; then
+    echo "Found: $exe"
+    "$exe" --usage
+    exit $?
+  fi
+done
+echo 'startosinstall not found at expected paths. No installation started.'
+exit 1
