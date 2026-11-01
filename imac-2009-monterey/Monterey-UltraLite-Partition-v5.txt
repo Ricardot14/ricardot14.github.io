@@ -1,0 +1,131 @@
+#!/bin/bash
+# Monterey UltraLite -- guarded GPT provisioning on iMac10,1 / Sierra 10.12.
+# Version 5.0. DO NOT execute GPT changes from the currently booted Sierra.
+set -euo pipefail
+
+VERSION=5.0
+STAGED="/Users/Shared/Monterey-UltraLite-Partition-v5.txt"
+DISK="disk0"
+SECTOR_SIZE=512
+FREE_START=1368866672
+FREE_SECTORS=584658463
+INSTALLER_START=1368866672
+INSTALLER_SECTORS=67108864            # 32 GiB
+MONTEREY_START=1435975536
+MONTEREY_SECTORS=517285888            # ~264.85 GB
+HFS_GUID="48465300-0000-11AA-AA11-00306543ECAC"
+EFI_GUID="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+BOOT_GUID="426F6F74-0000-11AA-AA11-00306543ECAC"
+
+say() { printf '%s\n' "$*"; }
+die() { say "STOP: $*" >&2; exit 1; }
+
+map_read() {
+  MAP=$(/usr/sbin/gpt -r show "$DISK") || die "Unable to inspect GPT. No changes attempted."
+}
+
+has_partition() {
+  # $1 start, $2 sectors, $3 index, $4 GPT type
+  printf '%s\n' "$MAP" | awk -v b="$1" -v s="$2" -v i="$3" -v t="$4" \
+    '$1==b && $2==s && $3==i && $4=="GPT" && $5=="part" && $7==t {found=1} END {exit !found}'
+}
+
+free_region() {
+  printf '%s\n' "$MAP" | awk -v b="$1" -v s="$2" \
+    '$1==b && $2==s && NF==2 {found=1} END {exit !found}'
+}
+
+validate_existing() {
+  # Prevent writing to an unexpected disk. Exact GPT coordinates came from
+  # the user's November 1 read-only /usr/sbin/gpt -r show disk0 report.
+  map_read
+  has_partition 40 409600 1 "$EFI_GUID" || die "EFI entry changed."
+  has_partition 409640 1367187496 2 "$HFS_GUID" || die "Sierra entry changed."
+  has_partition 1367597136 1269536 3 "$BOOT_GUID" || die "Recovery entry changed."
+  # Only original three GPT entries or those plus OUR two expected entries.
+  actual=$(printf '%s\n' "$MAP" | awk '$4=="GPT" && $5=="part"{n++} END{print n+0}')
+  [ "$actual" -ge 3 ] && [ "$actual" -le 5 ] || die "Unexpected partitions ($actual)."
+  [ "$(/usr/sbin/diskutil info / | awk -F: '/Device Identifier:/{gsub(/[[:space:]]/,"",$2); print $2;exit}')" != "disk0s2" ] || LIVE_SIERRA=1
+  INSTALLED_INSTALLER=0
+  INSTALLED_MONTEREY=0
+  if has_partition "$INSTALLER_START" "$INSTALLER_SECTORS" 4 "$HFS_GUID"; then INSTALLED_INSTALLER=1; fi
+  if has_partition "$MONTEREY_START" "$MONTEREY_SECTORS" 5 "$HFS_GUID"; then INSTALLED_MONTEREY=1; fi
+  expected=$((3+INSTALLED_INSTALLER+INSTALLED_MONTEREY))
+  [ "$actual" -eq "$expected" ] || die "Unknown GPT entries exist."
+  if [ "$INSTALLED_INSTALLER" -eq 0 ] && [ "$INSTALLED_MONTEREY" -eq 0 ]; then
+    free_region "$FREE_START" "$FREE_SECTORS" || die "Unallocated GPT region is different."
+  elif [ "$INSTALLED_INSTALLER" -eq 1 ] && [ "$INSTALLED_MONTEREY" -eq 0 ]; then
+    free_region "$MONTEREY_START" "$((FREE_SECTORS-INSTALLER_SECTORS))" || die "Remaining GPT gap changed."
+  fi
+}
+
+check() {
+  LIVE_SIERRA=0
+  validate_existing
+  say "=== Monterey UltraLite GPT preflight v$VERSION ==="
+  say "Original Sierra and Recovery GPT entries: verified"
+  say "Installer partition entry: $INSTALLED_INSTALLER"
+  say "Monterey partition entry: $INSTALLED_MONTEREY"
+  say "Current system is Sierra boot volume: $LIVE_SIERRA"
+  say "Planned installer: 32 GiB"
+  say "Planned Monterey: ~264.85 GB"
+  say "Nothing written."
+}
+
+stage() {
+  LIVE_SIERRA=0
+  validate_existing
+  [ "$LIVE_SIERRA" -eq 1 ] || die "Stage from the ordinary Sierra session."
+  /bin/mkdir -p /Users/Shared
+  /bin/cp "$0" "$STAGED"
+  /bin/chmod 644 "$STAGED"
+  say "STAGED: $STAGED"
+  say "Next: restart holding Command-R to enter macOS Recovery."
+  say "In Recovery > Utilities > Terminal, paste:"
+  say 'diskutil mount disk0s2; cp "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Partition-v5.txt" /tmp/mlu-v5.txt; bash /tmp/mlu-v5.txt provision'
+  say "No partitions have been modified."
+}
+
+provision() {
+  LIVE_SIERRA=0
+  validate_existing
+  [ "$LIVE_SIERRA" -eq 0 ] || die "You are running Sierra. GPT changes require Recovery or another independent boot environment. Run stage instead."
+  [ "$(id -u)" -eq 0 ] || die "Run in Recovery Terminal as root (Recovery typically opens a root shell)."
+  say "=== GPT installation on $DISK ==="
+  say "Sierra EFI, Sierra HFS+, and Recovery boundaries verified."
+  say "The installer is 32 GiB and Monterey will be ~264.85 GB."
+  say "This changes the partition table on your sole unbacked drive."
+  if [ "$INSTALLED_INSTALLER" -eq 1 ] && [ "$INSTALLED_MONTEREY" -eq 1 ]; then
+    say "Both new partitions already exist; no changes."
+    exit 0
+  fi
+  say "Type exactly PROVISION to proceed:"
+  read -r answer
+  [ "$answer" = "PROVISION" ] || die "Confirmation not supplied."
+  say "Unmounting internal disk (without force)..."
+  /usr/sbin/diskutil unmountDisk "$DISK" || die "Internal disk is busy. No forced GPT writes; stop here."
+  if [ "$INSTALLED_INSTALLER" -eq 0 ]; then
+    say "Creating new GPT entry #4 (installer)..."
+    /usr/sbin/gpt add -i 4 -b "$INSTALLER_START" -s "$INSTALLER_SECTORS" -t "$HFS_GUID" "$DISK" || die "First partition write failed. No retry with -f."
+    LIVE_SIERRA=0
+    validate_existing
+    [ "$INSTALLED_INSTALLER" -eq 1 ] || die "Installer entry did not verify."
+  fi
+  if [ "$INSTALLED_MONTEREY" -eq 0 ]; then
+    say "Creating new GPT entry #5 (Monterey)..."
+    /usr/sbin/gpt add -i 5 -b "$MONTEREY_START" -s "$MONTEREY_SECTORS" -t "$HFS_GUID" "$DISK" || die "Second partition write failed. Do not remove existing entries."
+    LIVE_SIERRA=0
+    validate_existing
+    [ "$INSTALLED_MONTEREY" -eq 1 ] || die "Monterey entry did not verify."
+  fi
+  say "=== BOTH NEW GPT ENTRIES VERIFIED ==="
+  /usr/sbin/gpt -r show "$DISK"
+  say "Restart into Sierra. Do not erase/format until the new partition IDs are validated."
+}
+
+case "${1:-check}" in
+  check) check;;
+  stage) stage;;
+  provision) provision;;
+  *) say "Usage: bash <script>.txt [check|stage|provision]"; exit 2;;
+esac
