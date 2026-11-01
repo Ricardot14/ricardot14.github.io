@@ -24,7 +24,7 @@ Do not bypass security with curl -k, and do not enter GitHub passwords/tokens.
 ----------------------------------------------------------
 Run these commands, one line at a time:
 
-    BASE=https://raw.githubusercontent.com/Ricardot14/ricardot14-github.io/master/imac-2009-monterey
+    BASE=https://raw.githubusercontent.com/Ricardot14/ricardot14.github.io/master/imac-2009-monterey
     curl -fL --retry 2 "$BASE/Monterey-UltraLite-Partition-v5.txt" -o /tmp/mlu-v5.txt
     curl -fL --retry 2 "$BASE/Monterey-UltraLite-OFFLINE-v6.txt" -o /tmp/mlu-v6.txt
     curl -fL --retry 2 "$BASE/Monterey-UltraLite-OFFLINE-GUIDE-v6.txt" -o /tmp/mlu-guide.txt
@@ -83,7 +83,7 @@ v6 prepare was previously successful. If v6 prepare was not completed,
 STOP before the next disk-writing phase.
 
 GitHub files:
-https://github.com/Ricardot14/ricardot14-github.io/tree/master/imac-2009-monterey
+https://github.com/Ricardot14/ricardot14.github.io/tree/master/imac-2009-monterey
 
 Remember: the initial setup does NOT install UxPlay, Codex, AirPlay 2 receiver,
 Handoff, Universal Control, or working Monterey Target Display Mode.
