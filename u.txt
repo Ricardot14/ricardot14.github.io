@@ -1,5 +1,5 @@
 #!/bin/bash
-# Monterey UltraLite USB preparation — Sierra 10.12 / iMac10,1 / Bash 3.2
+# Monterey UltraLite USB preparation v2 — Sierra 10.12 / iMac10,1 / Bash 3.2
 # Only the explicitly confirmed, verified external USB disk is erased.
 # Never erases or repartitions internal disk0. Does not install Monterey.
 set -eu
@@ -9,7 +9,7 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin
 fail() { printf '\nSTOP: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-say 'Monterey UltraLite — USB preparation (16 GB)'
+say 'Monterey UltraLite — USB preparation v2 (16 GB)'
 [ "$(sw_vers -productVersion)" = '10.12.6' ] || fail 'Boot normal Sierra 10.12.6 first (not Recovery).'
 [ "$(sysctl -n hw.model)" = 'iMac10,1' ] || fail 'Only for the verified 2009 iMac.'
 [ -x "$MEDIA" ] || fail 'Complete Monterey installer missing from Applications.'
@@ -26,7 +26,12 @@ DETAILS="$(diskutil info "$DEV")" || fail 'Cannot inspect the USB disk.'
 printf '%s\n' "$DETAILS" | grep -Eq '^[[:space:]]*Device Location:[[:space:]]*External([[:space:]]|$)' || fail 'Device is not reported as external.'
 printf '%s\n' "$DETAILS" | grep -Eiq '^[[:space:]]*Protocol:[[:space:]]*USB([[:space:]]|$)' || fail 'Device does not use USB.'
 printf '%s\n' "$DETAILS" | grep -Eq '^[[:space:]]*Whole:[[:space:]]*Yes([[:space:]]|$)' || fail 'Device is not a whole disk.'
-SIZE="$(diskutil info -plist "$DEV" | /usr/libexec/PlistBuddy -c 'Print :TotalSize' /dev/stdin 2>/dev/null)" || fail 'Cannot verify disk capacity.'
+PLIST="$(mktemp /tmp/mlu-usb-info.XXXXXX)" || fail 'Cannot create temporary file.'
+trap 'rm -f "$PLIST"' EXIT
+diskutil info -plist "$DEV" > "$PLIST" || fail 'Cannot inspect USB capacity.'
+SIZE="$(/usr/libexec/PlistBuddy -c 'Print :TotalSize' "$PLIST" 2>/dev/null)" || fail 'Cannot verify disk capacity.'
+rm -f "$PLIST"
+trap - EXIT
 case "$SIZE" in ''|*[!0-9]*) fail 'Unknown disk capacity.';; esac
 [ "$SIZE" -ge 14500000000 ] || fail 'Drive is below the minimum 16 GB nominal size.'
 
