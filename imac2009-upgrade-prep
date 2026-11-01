@@ -1,0 +1,57 @@
+#!/bin/bash
+# iMac late-2009 upgrade preparation, verified Apple High Sierra route.
+# Safe for macOS Sierra Bash 3.2. No sudo, disk erase or automatic OS installation.
+set -u
+
+model=$(/usr/sbin/sysctl -n hw.model 2>/dev/null || true)
+os=$(/usr/bin/sw_vers -productVersion 2>/dev/null || true)
+if [ "$model" != "iMac10,1" ] && [ "$model" != "iMac11,1" ]; then
+  printf 'STOP: Expected a late-2009 iMac, found %s. No changes made.\n' "${model:-unknown}" >&2
+  exit 1
+fi
+case "$os" in
+  10.12.*|10.13.*) ;;
+  *) printf 'STOP: This upgrade helper expects Sierra/High Sierra; detected %s.\n' "$os" >&2; exit 1 ;;
+esac
+
+out="$HOME/Desktop/iMac2009-upgrade-check.txt"
+if [ ! -d "$HOME/Desktop" ]; then out="$HOME/iMac2009-upgrade-check.txt"; fi
+{
+  printf '2009 iMac upgrade readiness report\n'
+  /bin/date
+  printf '\n== Hardware ==\n'
+  /usr/sbin/sysctl -n hw.model hw.memsize machdep.cpu.brand_string 2>&1 || true
+  /usr/sbin/system_profiler SPDisplaysDataType 2>&1 | /usr/bin/grep -E 'Chipset Model|VRAM|Metal|Display Type' || true
+  printf '\n== OS and boot disk ==\n'
+  /usr/bin/sw_vers 2>&1 || true
+  /bin/df -h / 2>&1 || true
+  /usr/sbin/diskutil info / 2>&1 | /usr/bin/grep -E 'Device Identifier|Volume Name|File System|Solid State|Internal|Protocol|APFS' || true
+  printf '\n== Target Display / AirPlay infrastructure ==\n'
+  /bin/launchctl list 2>&1 | /usr/bin/grep -E 'com\.ricardo\.airplay2\.receiver|com\.ricardo\.imacbridge' || true
+  /bin/ps -A -o comm= 2>&1 | /usr/bin/grep -E 'shairport-sync|nqptp' || true
+  /usr/sbin/lsof -nP -iTCP:7000 -iUDP:319 -iUDP:320 2>&1 || true
+  printf '\n== Backup state ==\n'
+  /usr/bin/tmutil latestbackup 2>&1 || true
+} > "$out"
+/bin/chmod 600 "$out" 2>/dev/null || true
+
+free_kb=$(/bin/df -Pk / | /usr/bin/awk 'NR==2 {print $4}')
+if [ -z "$free_kb" ]; then free_kb=0; fi
+printf 'Model: %s | macOS: %s\n' "$model" "$os"
+printf 'Readiness report: %s\n' "$out"
+if [ "$free_kb" -lt 26214400 ]; then
+  printf 'STOP: Less than 25 GiB free on the startup disk. Free space before installing.\n' >&2
+  exit 2
+fi
+if [ "$os" = '10.13.6' ]; then
+  printf 'Already on the latest natively supported macOS (High Sierra 10.13.6).\n'
+  printf 'For newer macOS, use OpenCore Legacy Patcher on a separate external SSD.\n'
+  exit 0
+fi
+printf '\nIMPORTANT: Back up before clicking Install.\n'
+printf 'High Sierra is the last macOS that Apple documents for Target Display Mode.\n'
+printf 'Your custom AirPlay receiver/MacPorts may require repairs after upgrading.\n'
+printf 'Opening Apple official High Sierra download (the OS is NOT being installed).\n'
+/usr/bin/open 'macappstores://apps.apple.com/app/macos-high-sierra/id1246284741?mt=12' || \
+  /usr/bin/open 'https://apps.apple.com/us/app/macos-high-sierra/id1246284741?mt=12'
+printf 'In the App Store click Get, then follow the installer only after confirming a backup.\n'
