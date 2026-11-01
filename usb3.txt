@@ -1,0 +1,48 @@
+#!/bin/bash
+# Monterey UltraLite USB preparation v3 — Sierra 10.12 / iMac10,1 / Bash 3.2
+# Only the explicitly confirmed, verified external USB disk is erased.
+# Never erases or repartitions internal disk0. Does not install Monterey.
+set -eu
+APP='/Applications/Install macOS Monterey.app'
+MEDIA="$APP/Contents/Resources/createinstallmedia"
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+fail() { printf '\nSTOP: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+say 'Monterey UltraLite — USB preparation v3 (16 GB)'
+[ "$(sw_vers -productVersion)" = '10.12.6' ] || fail 'Boot normal Sierra 10.12.6 first (not Recovery).'
+[ "$(sysctl -n hw.model)" = 'iMac10,1' ] || fail 'Only for the verified 2009 iMac.'
+[ -x "$MEDIA" ] || fail 'Complete Monterey installer missing from Applications.'
+[ -d '/Applications/OpenCore-Patcher.app' ] || fail 'OpenCore Legacy Patcher app missing; prepare it first.'
+
+# Detect exactly one whole external physical drive. Never autodetect disk0.
+DRIVES="$(diskutil list external physical | awk '/^\/dev\/disk[0-9]+ /{sub("/dev/", "", $1); print $1}')"
+COUNT="$(printf '%s\n' "$DRIVES" | awk 'NF{n++}END{print n+0}')"
+[ "$COUNT" -eq 1 ] || { diskutil list external physical; fail 'Connect exactly one USB drive, then run this command again.'; }
+DEV="$DRIVES"
+case "$DEV" in disk[1-9]*) ;; *) fail 'Invalid USB disk identifier.';; esac
+case "$DEV" in *s[0-9]*) fail 'Partition identifier is not a whole disk.';; esac
+DETAILS="$(diskutil info "$DEV")" || fail 'Cannot inspect the USB disk.'
+printf '%s\n' "$DETAILS" | grep -Eq '^[[:space:]]*Device Location:[[:space:]]*External([[:space:]]|$)' || fail 'Device is not reported as external.'
+printf '%s\n' "$DETAILS" | grep -Eiq '^[[:space:]]*Protocol:[[:space:]]*USB([[:space:]]|$)' || fail 'Device does not use USB.'
+printf '%s\n' "$DETAILS" | grep -Eq '^[[:space:]]*Whole:[[:space:]]*Yes([[:space:]]|$)' || fail 'Device is not a whole disk.'
+# diskutil's plist size keys vary across macOS releases; do not guess a fixed key.
+# Show the capacity reported by Sierra and let Apple's installer check available space.
+say 'USB device details (review capacity before authorizing erasure):'
+diskutil list "$DEV" || fail 'Cannot display USB layout.'
+diskutil info "$DEV" | grep -E 'Disk Size:|Total Size:|Device / Media Name:' || true
+[ ! -e '/Volumes/MLU-USB' ] || fail 'Another volume named MLU-USB is mounted; disconnect it first.'
+
+say "Verified external USB: $DEV"
+say 'WARNING: ALL FILES ON THIS USB WILL BE PERMANENTLY ERASED.'
+say 'Internal Sierra disk0 will NOT be partitioned or erased.'
+say "Type exactly ERASE-$DEV to erase this USB, or press Ctrl-C to cancel:"
+IFS= read -r ANSWER || fail 'No confirmation given.'
+[ "$ANSWER" = "ERASE-$DEV" ] || fail 'No erase confirmation; no changes.'
+
+sudo diskutil eraseDisk JHFS+ MLU-USB GPT "$DEV" || fail 'USB formatting failed.'
+[ -d '/Volumes/MLU-USB' ] || fail 'New USB volume did not mount.'
+say 'Preparing the Monterey USB from your existing installer...'
+sudo "$MEDIA" --volume '/Volumes/MLU-USB' --applicationpath "$APP" --nointeraction || fail 'Apple createinstallmedia failed. Your internal disk is untouched.'
+say 'USB installer prepared. OpenCore bootloader setup and Monterey installation are still required.'
+open '/Applications/OpenCore-Patcher.app' || say 'Open the installed OpenCore-Patcher.app manually.'
