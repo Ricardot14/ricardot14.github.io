@@ -1,0 +1,202 @@
+MONTEREY ULTRALITE -- COMPLETE OFFLINE INSTALLATION GUIDE, VERSION 6.0
+2026-11-01 | iMac10,1 | Sierra 10.12.6 | Core 2 Duo 3.06 GHz | 4 GB RAM
+ATI Radeon HD 4670 256MB | Seagate 1TB HDD | NO USB | NO EXTERNAL BACKUP
+
+READ BEFORE STARTING
+-------------------
+This is an experimental installation on unsupported hardware using an INTERNAL
+installer partition. It cannot be guaranteed to work. Do not try to install
+Monterey into Macintosh HD or the entire physical disk. The goal is to
+retain Sierra for Target Display Mode. Native Target Display Mode under
+Monterey is NOT restored by these scripts and may never work on this GPU.
+
+Sierra originally occupies disk0s2 (700GB); Sierra Recovery is 650MB; EFI
+is disk0s1. A previously verified gap starts at sector 1368866672. The
+partition v5 tool checks exact GPT boundaries before any write. If
+anything differs, STOP. Never use gpt -f or diskutil eraseDisk disk0.
+The existing Sierra disk has no independent backup. Even guarded partition
+operations can destroy Sierra. If that would be unacceptable, STOP.
+
+WHAT YOU NEED LOCALLY
+---------------------
+- /Applications/Install macOS Monterey.app (previously confirmed about 12GB)
+- /Applications/OpenCore-Patcher.app (previously installed in Sierra)
+- /Users/Shared/Monterey-UltraLite-Partition-v5.txt (already staged)
+- /Users/Shared/Monterey-UltraLite-v4/Monterey-UltraLite-Master.command
+  (already staged; its Sierra partitioning commands MUST NOT be used)
+- ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt (new orchestrator)
+- ~/Downloads/Monterey-UltraLite-OFFLINE-GUIDE-v6.txt (this guide)
+
+PHASE 1 -- BEFORE RESTARTING, IN SIERRA
+---------------------------------------
+Download BOTH new .txt files from ChatGPT. Then run:
+
+  bash ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt prepare
+
+This saves the orchestrator and (when downloaded) this guide under
+/Users/Shared/Monterey-UltraLite-Offline-v6/ and puts a copy of the guide
+on the Sierra Desktop. If the local OCLP .pkg is present it is copied for
+later installation in Monterey. Preparation must report success before
+restarting. It does not change the GPT, EFI or Sierra settings.
+
+PHASE 2 -- IN SIERRA RECOVERY (COMMAND-R)
+-----------------------------------------
+Restart the iMac and hold Command-R. For Bluetooth keyboard startup key
+issues use a wired keyboard. In Recovery, open Utilities -> Terminal.
+
+Paste EACH of these four lines (they are also safe to paste as a block):
+
+  diskutil mount disk0s2
+  cp "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" /tmp/mlu-v6.txt
+  cp "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Partition-v5.txt" /tmp/mlu-v5.txt
+  bash /tmp/mlu-v6.txt recovery
+
+If disk0s2 reports 'already mounted', that is OK. If the copy fails,
+inspect `ls /Volumes` and use the EXACT name of the Sierra volume.
+No change has occurred unless you type the word PROVISION into the v5
+confirmation prompt. Inspect its output. It must report BOTH expected new
+GPT entries verified. If it fails at any point, STOP and reboot Sierra;
+never force unmounts or repeat blindly.
+
+Expected NEW entries:
+  index 4: 32GiB installer, first sector 1368866672
+  index 5: ~264.85GB Monterey, first sector 1435975536
+Original EFI, Sierra and Recovery GPT entries must remain unchanged.
+
+Restart back into Sierra (Apple menu -> Restart or `reboot`).
+
+PHASE 3 -- BACK IN SIERRA, FORMAT NEW VOLUMES / CREATE INSTALLER
+-----------------------------------------------------------------
+
+  bash ~/Downloads/Monterey-UltraLite-OFFLINE-v6.txt finish
+
+The tool verifies 5 exact GPT entries and uniquely identifies the new
+slices by their FULL BYTE SIZES, never guessing disk0s3 vs disk0s5.
+The confirmation phrase is:
+
+  FORMAT ONLY THE TWO NEW PARTITIONS
+
+It formats ONLY the exact-size NEW partitions as HFS+ named MLU-Installer
+and MLU-Monterey, and saves a same-disk copy of EFI. This EFI copy is NOT
+an external backup. For the next confirmation phrase, enter:
+
+  CREATE MONTEREY INSTALLER
+
+Apple's createinstallmedia then erases ONLY the verified MLU-Installer
+volume and writes the official Monterey installer. Because Sierra 10.12.6
+is the source OS, the script includes Apple's --applicationpath parameter.
+The source installer must already be in /Applications.
+
+If createinstallmedia reports an error, do NOT format Sierra, do NOT use
+OCLP's 'Create macOS Installer' with the whole internal disk, and do NOT
+rerun the GPT stage. Resolve the installer error first.
+
+PHASE 4 -- OPENCORE: REQUIRED ONE-TIME GUI ACTION
+--------------------------------------------------
+The finish script opens OpenCore-Patcher. If it doesn't open, run:
+
+  open -a OpenCore-Patcher
+
+In OCLP select:
+  Build and Install OpenCore -> Build OpenCore -> Install to disk ->
+  INTERNAL 1TB disk0 -> EXISTING EFI partition disk0s1.
+
+This changes the SHARED EFI for Sierra and Monterey, and can affect boot
+selection / Target Display Mode. The script has copied EFI to
+/Users/Shared/Monterey-UltraLite-Offline-v6/EFI-BACKUP-BEFORE-OCLP on the
+same drive. You are accepting the bootloader risk by continuing.
+
+DO NOT select 'Create macOS Installer' in OCLP for disk0. Its workflow can
+erase a whole disk. We already used Apple's installer on the separate
+installer volume. Do not use 'Erase Disk' anywhere on disk0.
+
+Once OpenCore reports successful install, RESTART, hold OPTION (Alt),
+select EFI Boot, then within the OpenCore boot picker select the entry
+'Install macOS Monterey'. If EFI Boot or the installer is missing, STOP,
+try booting the original 'Macintosh HD' Sierra volume directly.
+
+PHASE 5 -- MACOS MONTEREY INSTALLER (MANUAL DISK SELECTION)
+----------------------------------------------------------
+When installer opens, install ONLY to MLU-Monterey (NOT Macintosh HD).
+If the Monterey destination must be reformatted as APFS, open Disk
+Utility and select ONLY the MLU-Monterey VOLUME, not the parent Seagate
+physical disk, Macintosh HD, EFI or Recovery. Erase that one volume as
+APFS, name it MLU-Monterey. Then return to the Monterey installer and
+select it as the destination.
+
+The installation can reboot several times. On subsequent boots, if it
+returns to the first installer screen, boot with OPTION -> EFI Boot ->
+OpenCore picker -> 'macOS Installer' or 'MLU-Monterey' (grey disk icon),
+NOT the initial 'Install macOS Monterey' entry. Avoid touching Sierra.
+
+PHASE 6 -- FIRST BOOT INTO MONTEREY, OCLP ROOT PATCHES
+------------------------------------------------------
+Monterey may be slow and Wi-Fi may not work until OCLP post-install root
+patches are applied. Open Monterey Terminal and run:
+
+  diskutil mount disk0s2
+  bash "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" install-patcher
+
+If the disk was already mounted, an 'already mounted' notice is fine.
+The install-patcher command installs the already-downloaded OCLP package
+from Sierra, if available, into Monterey and opens the OCLP application.
+In OCLP choose 'Post-Install Root Patch' -> 'Start Root Patching'. Reboot
+when it completes. This is essential for the non-Metal HD 4670 graphics.
+Internet may be required for OCLP payloads; if Wi-Fi is absent use wired
+Ethernet or a compatible tethering option.
+
+If the staged OCLP .pkg was not copied in Phase 1, the firstboot stage
+CANNOT fix it. Find the original file on Sierra or download a genuine
+OCLP PKG from the official Dortania GitHub release (not third parties).
+
+PHASE 7 -- LIGHTWEIGHT DESKTOP / APPLE SERVICES
+-----------------------------------------------
+AFTER root patches and reboot, on Monterey run:
+
+  bash "/Volumes/Macintosh HD/Users/Shared/Monterey-UltraLite-Offline-v6/Monterey-UltraLite-OFFLINE-v6.txt" firstboot
+
+This calls the previously staged v4.1 first-boot profile, disables some
+UI animation and visual effects, saves preferences for restoration and
+creates a 'Monterey UltraLite' Desktop folder. It intentionally retains
+Safari, Photos, Spotlight, AirDrop, Bluetooth and AirPlay audio OUTPUT.
+The master script includes desktop controls to check performance, restore
+preferences, inspect Target Display Mode, and attempt optional Codex CLI
+compatibility checks. It does not strip Apple system frameworks.
+
+CURRENT FEATURE REALITY
+-----------------------
+- Sierra Target Display Mode: currently the known working arrangement.
+- Monterey Target Display Mode: UNVERIFIED, not implemented; 2010 SMC
+  experiments must NOT be run blindly on this 2009 hardware.
+- AirPlay audio OUTPUT to HomePods: services preserved, not yet tested.
+- Native AirPlay 2 audio RECEIVER: not enabled/verified.
+- AirPlay VIDEO receiving: UxPlay is a candidate; not installed and not
+  performance-verified on this Mac.
+- AirDrop: Atheros AR9280 reported support under Sierra; iOS AirDrop
+  compatibility is unverified.
+- Handoff / Universal Control: original Bluetooth 2.1 lacks BLE, so
+  native functionality is NOT unlocked by this installation.
+- Codex CLI: an optional compatibility experiment, not preinstalled.
+
+EMERGENCY / FAILURE RECOVERY
+----------------------------
+If partitioning fails: STOP. Do not run formatting, GPT commands or force
+unmounts. Try rebooting directly to Sierra.
+If OpenCore/Monterey fails to boot: restart holding OPTION, then choose
+original Macintosh HD / Sierra, NOT EFI Boot if direct boot is available.
+If Monterey is unusable: keep Sierra; do not delete Sierra, Recovery or
+EFI. Do not attempt untested SMC register writes to force TDM.
+If EFI is damaged: the only saved EFI copy is ON THE SAME HDD. Restoring
+EFI is an expert recovery task, not automated by this guide.
+If a disk reports errors, do not retry destructive commands.
+
+OFFICIAL DOCUMENTATION (available with an internet connection)
+--------------------------------------------------------------
+Apple installer: https://support.apple.com/101578
+OCLP installer: https://dortania.github.io/OpenCore-Legacy-Patcher/INSTALLER.html
+OCLP build: https://dortania.github.io/OpenCore-Legacy-Patcher/BUILD.html
+OCLP boot: https://dortania.github.io/OpenCore-Legacy-Patcher/BOOT.html
+OCLP post install: https://dortania.github.io/OpenCore-Legacy-Patcher/POST-INSTALL.html
+
+Reminder: No 'zero-error' guarantee is possible for this unsupported,
+no-USB, single-disk workflow. Stop at any unexpected result.
