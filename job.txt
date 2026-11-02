@@ -1,9 +1,53 @@
 #!/bin/sh
-# Monterey UltraLite safe pause: user declined full installer download and restart.
-# No automatic repairs or downloads. Never alter Sierra, USB EFI, or partition layout.
-echo '=== MONTEREY: SAFE PAUSE ==='
-echo 'Full Apple installer download is disabled.'
-echo 'No changes made to Sierra, MLU-Monterey, USB, OpenCore or network.'
-echo 'Current USB installer produced Invalid argument when reading a resource file.'
-echo 'No safe unattended installation is possible until the installer source is verified or replaced.'
-echo 'You can shut down safely or boot Sierra. Do not erase the internal disk.'
+# Monterey UltraLite v5: distinguish USB source failure from Recovery temp filesystem failure.
+# Only writes disposable /tmp scratch files. No installer, reboot, disk or EFI changes.
+set -u
+echo '=== MONTEREY STAGE 5: ROOT-CAUSE COPY TEST ==='
+APP='/Volumes/Image Volume/Install macOS Monterey.app'
+SRC="$APP/Contents/Resources/arrowbuttonPressed.tiff"
+if [ ! -f "$SRC" ]; then
+  echo 'STOP: Expected Monterey installer USB not mounted at /Volumes/Image Volume.'
+  ls -1 /Volumes 2>&1
+  exit 2
+fi
+echo '1. Check source file readable from the USB'
+if /bin/cat "$SRC" >/dev/null; then
+  echo 'USB SOURCE READ: PASS'
+else
+  echo 'USB SOURCE READ: FAIL. Likely bad USB filesystem/media.'
+  exit 3
+fi
+echo '2. Check Recovery temporary filesystem writable'
+DIR="$(mktemp -d /tmp/mlu5.XXXXXX 2>/dev/null)" || { echo 'TMP CREATE: FAIL'; exit 4; }
+trap 'rm -rf "$DIR"' EXIT HUP INT TERM
+if printf 'TEST\n' > "$DIR/probe"; then
+  echo 'TEMP WRITE: PASS'
+else
+  echo 'TEMP WRITE: FAIL. Recovery scratch filesystem is faulty.'
+  exit 4
+fi
+if /bin/cp "$DIR/probe" "$DIR/probe.copy"; then
+  echo 'TEMP COPY: PASS'
+else
+  echo 'TEMP COPY: FAIL. Recovery scratch filesystem is faulty.'
+  exit 4
+fi
+echo '3. Test USB-to-Recovery copy'
+if /bin/cat "$SRC" > "$DIR/from-usb.cat"; then
+  echo 'USB -> TEMP via cat: PASS'
+else
+  echo 'USB -> TEMP via cat: FAIL'
+fi
+if /bin/cp "$SRC" "$DIR/from-usb.cp"; then
+  echo 'USB -> TEMP via cp: PASS'
+else
+  echo 'USB -> TEMP via cp: FAIL'
+fi
+echo '4. Installer data image header read (does not scan 12 GB)'
+DMG="$APP/Contents/SharedSupport/SharedSupport.dmg"
+if [ -r "$DMG" ] && /bin/dd if="$DMG" of=/dev/null bs=65536 count=1 2>/dev/null; then
+  echo 'DMG HEADER READ: PASS (NOT a full integrity check)'
+else
+  echo 'DMG HEADER READ: FAIL'
+fi
+echo '=== FINISHED. No install, erase, USB or EFI changes. ==='
