@@ -1,46 +1,30 @@
 #!/bin/sh
-# Monterey UltraLite: SECOND-STAGE read-only diagnostics.
-# Compatible with macOS Recovery bash/sh. No erases, writes, or OS installs.
-echo '=== MONTEREY DIAGNOSTIC STAGE 2 ==='
-echo '=== Date, OS, hardware ==='
+# Monterey UltraLite diagnostic stage 3 (read-only; macOS Recovery compatible)
+# No disk, EFI, SMBIOS, NVRAM, or network modifications.
+echo '=== MONTEREY STAGE 3: INSTALLER AND MODEL CHECK ==='
+echo '--- Booted OS and date ---'
 date
 sw_vers 2>&1
-sysctl hw.model 2>&1
-echo ''
-echo '=== Running OpenCore version (if available) ==='
-nvram '4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version' 2>&1 || true
-echo ''
-echo '=== Volumes ==='
-ls -1 /Volumes 2>&1
-echo ''
-echo '=== Disks and partitions ==='
-diskutil list 2>&1 | head -65
-echo ''
-echo '=== APFS containers (non-destructive) ==='
-diskutil apfs list 2>&1 | head -85
-echo ''
-echo '=== Installer bundles on mounted volumes ==='
-FOUND=0
-for A in /Volumes/*/'Install macOS Monterey.app' /Applications/'Install macOS Monterey.app'
+echo '--- Native model ---'
+sysctl -n hw.model 2>&1
+echo '--- Board-ID and OpenCore PlatformInfo ---'
+ioreg -rd1 -c IOPlatformExpertDevice 2>&1 | grep -E '"board-id"|"model"|"compatible"' | head -10 || true
+echo '--- OpenCore NVRAM hints ---'
+nvram -p 2>/dev/null | grep -Ei 'OCLP|opencore|boot-args' | head -12 || true
+echo '--- Monterey installer size and signature ---'
+for APP in /Volumes/*/'Install macOS Monterey.app'
 do
-  if [ -d "$A" ]; then
-    FOUND=1
-    echo "Installer: $A"
-    /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$A/Contents/Info.plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$A/Contents/Info.plist" 2>/dev/null || true
-    for P in "$A/Contents/SharedSupport/SharedSupport.dmg" "$A/Contents/SharedSupport/InstallESD.dmg" "$A/Contents/SharedSupport.dmg"
-    do
-      if [ -f "$P" ]; then ls -lh "$P"; fi
-    done
-  fi
+  [ -d "$APP" ] || continue
+  echo "FOUND $APP"
+  [ -f "$APP/Contents/SharedSupport/SharedSupport.dmg" ] && ls -lh "$APP/Contents/SharedSupport/SharedSupport.dmg"
+  /usr/bin/codesign -dv "$APP" 2>&1 | grep -E 'Identifier=|Authority=|TeamIdentifier=|Timestamp=' | head -8 || true
 done
-if [ "$FOUND" -eq 0 ]; then echo 'No visible installer app (USB may not be mounted in this OS).'; fi
-echo ''
-echo '=== Recent installer errors from /var/log/install.log ==='
+echo '--- Target volume: MLU-Monterey ---'
+diskutil info '/Volumes/MLU-Monterey' 2>&1 | grep -E 'Volume Name:|Mounted:|Mount Point:|File System Personality:|Disk Size:|Volume Total Space:' || true
+echo '--- Relevant errors in install.log ---'
 if [ -r /var/log/install.log ]; then
-  grep -Ei 'OSISPredicate|No product found|Prepare recovery|OSInstallerSetup|error code|Error Domain|product fetch|Fetching OS Recovery' /var/log/install.log | tail -35 || true
+  grep -Ei 'OSISPredicateUpdateProduct|No product found|Code=303|Code=207|Prepare recovery|Copy App Bundle|arrowbuttonPressed|Installation requires|Could not continue|OSInstallerSetup.error|Failed to load trust cache' /var/log/install.log | tail -45 || true
 else
-  echo 'No readable /var/log/install.log here.'
+  echo 'install.log unavailable'
 fi
-echo ''
-echo 'READ-ONLY DIAGNOSTIC COMPLETE. Sierra and partitions unchanged.'
+echo '=== END: READ-ONLY CHECK, NO CHANGES ==='
