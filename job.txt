@@ -1,30 +1,55 @@
 #!/bin/sh
-# Monterey UltraLite diagnostic stage 3 (read-only; macOS Recovery compatible)
-# No disk, EFI, SMBIOS, NVRAM, or network modifications.
-echo '=== MONTEREY STAGE 3: INSTALLER AND MODEL CHECK ==='
-echo '--- Booted OS and date ---'
-date
-sw_vers 2>&1
-echo '--- Native model ---'
-sysctl -n hw.model 2>&1
-echo '--- Board-ID and OpenCore PlatformInfo ---'
-ioreg -rd1 -c IOPlatformExpertDevice 2>&1 | grep -E '"board-id"|"model"|"compatible"' | head -10 || true
-echo '--- OpenCore NVRAM hints ---'
-nvram -p 2>/dev/null | grep -Ei 'OCLP|opencore|boot-args' | head -12 || true
-echo '--- Monterey installer size and signature ---'
+# Monterey UltraLite: decisive USB media integrity check (v4).
+# Does not erase, partition, modify EFI, change SMBIOS, or start an installation.
+set -u
+echo '=== MONTEREY STAGE 4: USB INTEGRITY ==='
+echo 'This is a read-only integrity check of the installer, except a small disposable /tmp test file.'
+echo '--- Mounted installers ---'
+SRC=''
+DMG=''
 for APP in /Volumes/*/'Install macOS Monterey.app'
 do
-  [ -d "$APP" ] || continue
-  echo "FOUND $APP"
-  [ -f "$APP/Contents/SharedSupport/SharedSupport.dmg" ] && ls -lh "$APP/Contents/SharedSupport/SharedSupport.dmg"
-  /usr/bin/codesign -dv "$APP" 2>&1 | grep -E 'Identifier=|Authority=|TeamIdentifier=|Timestamp=' | head -8 || true
+  if [ -f "$APP/Contents/Resources/arrowbuttonPressed.tiff" ]; then
+    SRC="$APP/Contents/Resources/arrowbuttonPressed.tiff"
+    DMG="$APP/Contents/SharedSupport/SharedSupport.dmg"
+    echo "Installer: $APP"
+    break
+  fi
 done
-echo '--- Target volume: MLU-Monterey ---'
-diskutil info '/Volumes/MLU-Monterey' 2>&1 | grep -E 'Volume Name:|Mounted:|Mount Point:|File System Personality:|Disk Size:|Volume Total Space:' || true
-echo '--- Relevant errors in install.log ---'
-if [ -r /var/log/install.log ]; then
-  grep -Ei 'OSISPredicateUpdateProduct|No product found|Code=303|Code=207|Prepare recovery|Copy App Bundle|arrowbuttonPressed|Installation requires|Could not continue|OSInstallerSetup.error|Failed to load trust cache' /var/log/install.log | tail -45 || true
-else
-  echo 'install.log unavailable'
+if [ -z "$SRC" ]; then
+  echo 'STOP: USB Monterey installer resource not mounted. Boot Monterey USB Recovery and retry.'
+  exit 2
 fi
-echo '=== END: READ-ONLY CHECK, NO CHANGES ==='
+echo '--- USB mount and image files ---'
+df -h "$(dirname "$SRC")" 2>&1 || true
+ls -l "$SRC" "$DMG" 2>&1 || true
+echo '--- Reproduce the exact resource-copy error safely ---'
+TMP="$(mktemp -d /tmp/mlu-tiff.XXXXXX 2>/dev/null)" || { echo 'STOP: Could not create temporary scratch directory.'; exit 3; }
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+if cp -p "$SRC" "$TMP/arrowbuttonPressed.tiff" 2>"$TMP/copyerr"; then
+  echo 'PASS: Resource copied with metadata.'
+else
+  echo 'FAIL: Copy with metadata failed:'
+  cat "$TMP/copyerr"
+  if cp "$SRC" "$TMP/plain.tiff" 2>"$TMP/plainerr"; then
+    echo 'PASS: Plain copy succeeded; source is readable; metadata copy is suspect.'
+  else
+    echo 'FAIL: Plain copy also failed:'
+    cat "$TMP/plainerr"
+    echo 'USB SOURCE READ FAILURE. Do not attempt installation using this copy.'
+    exit 4
+  fi
+fi
+echo '--- Integrity of Monterey SharedSupport.dmg ---'
+if [ ! -f "$DMG" ]; then
+  echo 'FAIL: SharedSupport.dmg is missing. Recreate the USB installer.'
+  exit 5
+fi
+echo 'Verifying entire installer image. On USB 2.0 this can be slow; leave the USB connected.'
+if hdiutil verify "$DMG"; then
+  echo 'RESULT: INSTALLER DMG VERIFIED. Do not rebuild the USB for an assumed corrupt image.'
+else
+  echo 'RESULT: INSTALLER DMG FAILED VERIFICATION. Recreate the USB installer from an independently verified source.'
+  exit 6
+fi
+echo '=== DONE: Sierra, Monterey target, and USB EFI not modified ==='
