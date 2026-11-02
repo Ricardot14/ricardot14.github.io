@@ -83,6 +83,75 @@ diskutil info -plist "$EFI" > "$TMP/efi-after.plist"
 AFTER="$(/usr/libexec/PlistBuddy -c 'Print :MountPoint' "$TMP/efi-after.plist" 2>/dev/null || true)"
 [ -n "$AFTER" ] && [ -f "$AFTER/EFI/OC/config.plist" ] && [ -f "$AFTER/EFI/BOOT/BOOTx64.efi" ] || stop "USB installer rebuilt but OpenCore EFI missing. Backup: $BACKUP."
 cmp "$BACKUP/EFI/OC/config.plist" "$AFTER/EFI/OC/config.plist" || stop "EFI changed unexpectedly. Backup: $BACKUP."
+echo 'Adding offline USB Terminal toolkit (does NOT modify the Apple installer app)...'
+cat > "$TMP/mlu.sh" <<'MLU_TOOLBOX'
+#!/bin/sh
+# Monterey UltraLite: portable offline, read-only diagnostic commands.
+# Keep this script OUTSIDE the signed Apple installer app.
+MODE=help
+[ "$#" -gt 0 ] && MODE="$1"
+case "$MODE" in
+  help|menu)
+    echo '=== MONTEREY USB TOOLBOX (READ ONLY) ==='
+    echo 'Run this same command with a final argument:'
+    echo '  status  - OS, hardware, disks, volumes'
+    echo '  usb     - installer USB resource read test'
+    echo '  logs    - latest installation error messages'
+    echo '  network - check Apple recovery server'
+    echo 'No changes to Sierra, partitions, USB EFI or macOS.'
+    ;;
+  status)
+    echo '=== OS / MODEL ==='
+    sw_vers 2>&1
+    sysctl hw.model 2>&1
+    echo '=== MOUNTED VOLUMES ==='
+    ls -1 /Volumes 2>&1
+    echo '=== DISK MAP ==='
+    diskutil list 2>&1
+    ;;
+  usb)
+    echo '=== INSTALLER RESOURCE READ TEST ==='
+    FOUND=0
+    for APP in /Volumes/*/'Install macOS Monterey.app'
+    do
+      SRC="$APP/Contents/Resources/arrowbuttonPressed.tiff"
+      [ -f "$SRC" ] || continue
+      FOUND=1
+      echo "Checking $SRC"
+      if /bin/cat "$SRC" >/dev/null; then
+        echo 'USB RESOURCE READ: PASS'
+      else
+        echo 'USB RESOURCE READ: FAIL'
+      fi
+    done
+    [ "$FOUND" -eq 1 ] || echo 'Installer app not visible in mounted volumes.'
+    ;;
+  logs)
+    echo '=== RECENT INSTALLATION ERRORS ==='
+    if [ -r /var/log/install.log ]; then
+      grep -Ei 'Copy App Bundle|arrowbuttonPressed|Failed to load trust cache|Code=303|Code=207|OSInstallerSetup|OSISPredicate|Failed' /var/log/install.log | tail -35 || true
+    else
+      echo '/var/log/install.log unavailable.'
+    fi
+    ;;
+  network)
+    echo '=== APPLE RECOVERY HTTPS ==='
+    curl -ILsS --connect-timeout 8 --max-time 16 -o /dev/null -w 'HTTP %{http_code}\n' https://osrecovery.apple.com/ 2>&1
+    ;;
+  *)
+    echo 'Unknown command. Valid: status, usb, logs, network.'
+    exit 2
+    ;;
+esac
+MLU_TOOLBOX
+/bin/sh -n "$TMP/mlu.sh" || stop 'Offline toolbox syntax check failed. Installer USB was created; nothing else modified.'
+sudo mkdir -p "$NEWMP/MLU-Tools" || stop 'Could not create offline USB toolbox folder.'
+sudo ditto "$TMP/mlu.sh" "$NEWMP/MLU-Tools/mlu.sh" || stop 'Could not install offline USB toolbox.'
+sudo chmod 755 "$NEWMP/MLU-Tools/mlu.sh" || stop 'Could not make offline USB toolbox readable/executable.'
+cmp "$TMP/mlu.sh" "$NEWMP/MLU-Tools/mlu.sh" || stop 'Offline USB toolbox copy failed verification.'
+echo 'OFFLINE USB TOOLBOX VERIFIED: MLU-Tools/mlu.sh'
+echo "In Monterey Recovery Terminal, run: sh /Volumes/*/MLU-Tools/mlu.sh"
+echo 'Optional: append status, usb, logs, or network.'
 echo '=== SUCCESS: REBUILT USB INSTALLER + PRESERVED OPENCORE ==='
 echo 'Restart holding Option. Select Kingston EFI Boot, then Install macOS Monterey.'
 echo 'Use MLU-Monterey as destination. NEVER erase Macintosh HD.'
