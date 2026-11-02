@@ -1,55 +1,61 @@
 #!/bin/sh
-# Monterey UltraLite: decisive USB media integrity check (v4).
-# Does not erase, partition, modify EFI, change SMBIOS, or start an installation.
-set -u
-echo '=== MONTEREY STAGE 4: USB INTEGRITY ==='
-echo 'This is a read-only integrity check of the installer, except a small disposable /tmp test file.'
-echo '--- Mounted installers ---'
-SRC=''
-DMG=''
-for APP in /Volumes/*/'Install macOS Monterey.app'
-do
-  if [ -f "$APP/Contents/Resources/arrowbuttonPressed.tiff" ]; then
-    SRC="$APP/Contents/Resources/arrowbuttonPressed.tiff"
-    DMG="$APP/Contents/SharedSupport/SharedSupport.dmg"
-    echo "Installer: $APP"
-    break
-  fi
-done
-if [ -z "$SRC" ]; then
-  echo 'STOP: USB Monterey installer resource not mounted. Boot Monterey USB Recovery and retry.'
+# Monterey UltraLite - obtain full Apple-signed installer on macOS Sierra.
+# Downloads to ~/Downloads only. Never alters USB, EFI, OS, or partitions.
+set -eu
+echo '=== MONTEREY: FRESH APPLE INSTALLER DOWNLOAD ==='
+OS="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+echo "Running OS: $OS"
+if [ "$OS" != '10.12.6' ]; then
+  echo 'STOP: Boot Macintosh HD (macOS Sierra 10.12.6), open Terminal, and rerun the SAME short link.'
+  echo 'Do not run this download in Monterey USB Recovery.'
   exit 2
 fi
-echo '--- USB mount and image files ---'
-df -h "$(dirname "$SRC")" 2>&1 || true
-ls -l "$SRC" "$DMG" 2>&1 || true
-echo '--- Reproduce the exact resource-copy error safely ---'
-TMP="$(mktemp -d /tmp/mlu-tiff.XXXXXX 2>/dev/null)" || { echo 'STOP: Could not create temporary scratch directory.'; exit 3; }
-trap 'rm -rf "$TMP"' EXIT HUP INT TERM
-if cp -p "$SRC" "$TMP/arrowbuttonPressed.tiff" 2>"$TMP/copyerr"; then
-  echo 'PASS: Resource copied with metadata.'
-else
-  echo 'FAIL: Copy with metadata failed:'
-  cat "$TMP/copyerr"
-  if cp "$SRC" "$TMP/plain.tiff" 2>"$TMP/plainerr"; then
-    echo 'PASS: Plain copy succeeded; source is readable; metadata copy is suspect.'
-  else
-    echo 'FAIL: Plain copy also failed:'
-    cat "$TMP/plainerr"
-    echo 'USB SOURCE READ FAILURE. Do not attempt installation using this copy.'
+MODEL="$(sysctl -n hw.model 2>/dev/null || true)"
+if [ "$MODEL" != iMac10,1 ]; then
+  echo "STOP: Expected 2009 iMac10,1, found $MODEL."
+  exit 2
+fi
+DIR="$HOME/Downloads"
+mkdir -p "$DIR"
+PKG="$DIR/Monterey-12.7.6-Apple-InstallAssistant.pkg"
+URL='https://swcdn.apple.com/content/downloads/24/16/062-40406-A_LQ4WW26M04/j7bl9ygay5prezturwh72ai10fvseh2uhw/InstallAssistant.pkg'
+CHECK=0
+if [ -f "$PKG" ]; then
+  BYTES="$(stat -f %z "$PKG" 2>/dev/null || echo 0)"
+  if [ "$BYTES" -gt 10000000000 ] && pkgutil --check-signature "$PKG" > /tmp/mlu-pkg-sig.txt 2>&1 && grep -Eq 'Apple Inc\.|Apple Software Update Certificate Authority' /tmp/mlu-pkg-sig.txt; then
+    CHECK=1
+    echo 'Found existing large Apple-signed package; skipping download.'
+  fi
+fi
+if [ "$CHECK" -ne 1 ]; then
+  FREEKB="$(df -Pk "$DIR" | awk 'NR==2 { print $4 }')"
+  case "$FREEKB" in ''|*[!0-9]*) echo 'STOP: Cannot measure Sierra free space'; exit 3;; esac
+  echo "Available on Sierra volume (KiB): $FREEKB"
+  if [ "$FREEKB" -lt 28000000 ]; then
+    echo 'STOP: Need approximately 28 GB of free Sierra space to download and unpack the installer safely.'
+    echo 'No changes made. Do not erase Sierra.'
+    exit 3
+  fi
+  echo 'Downloading Monterey 12.7.6 (~12GB) DIRECTLY from swcdn.apple.com.'
+  echo 'Resume supported: if interrupted, rerun the SAME short link.'
+  if ! curl --fail --location --retry 3 --connect-timeout 20 --continue-at - --output "$PKG" "$URL"; then
+    echo 'STOP: Download failed. Partial package kept for resume; no system changes.'
     exit 4
   fi
 fi
-echo '--- Integrity of Monterey SharedSupport.dmg ---'
-if [ ! -f "$DMG" ]; then
-  echo 'FAIL: SharedSupport.dmg is missing. Recreate the USB installer.'
+echo '=== Verifying downloaded file ==='
+BYTES="$(stat -f %z "$PKG" 2>/dev/null || echo 0)"
+echo "Package bytes: $BYTES"
+if [ "$BYTES" -lt 10000000000 ]; then
+  echo 'STOP: File is unexpectedly small; not accepted as a full macOS installer.'
   exit 5
 fi
-echo 'Verifying entire installer image. On USB 2.0 this can be slow; leave the USB connected.'
-if hdiutil verify "$DMG"; then
-  echo 'RESULT: INSTALLER DMG VERIFIED. Do not rebuild the USB for an assumed corrupt image.'
-else
-  echo 'RESULT: INSTALLER DMG FAILED VERIFICATION. Recreate the USB installer from an independently verified source.'
+if ! pkgutil --check-signature "$PKG"; then
+  echo 'STOP: Package signature check FAILED. Do not install this package.'
   exit 6
 fi
-echo '=== DONE: Sierra, Monterey target, and USB EFI not modified ==='
+echo ''
+echo '=== APPLE-SIGNED MONTEREY PACKAGE SAVED ==='
+echo "$PKG"
+echo 'No USB erase, EFI write, partition modification, or OS installation was performed.'
+echo 'Next: extract the verified installer app and recreate only the Kingston USB.'
