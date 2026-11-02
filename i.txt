@@ -1,27 +1,46 @@
 #!/bin/sh
-# Monterey installer network and recovery checks — READ ONLY
-# No partition, erase, installer, network-setting, or EFI changes.
-echo '=== Monterey installer / network diagnostic ==='
+# Monterey UltraLite: SECOND-STAGE read-only diagnostics.
+# Compatible with macOS Recovery bash/sh. No erases, writes, or OS installs.
+echo '=== MONTEREY DIAGNOSTIC STAGE 2 ==='
+echo '=== Date, OS, hardware ==='
 date
+sw_vers 2>&1
+sysctl hw.model 2>&1
 echo ''
-echo '=== Connected interfaces (ethernet, other) ==='
-ifconfig en0 2>&1 | grep -E '^(en0:|[[:space:]]*status:|[[:space:]]*inet )' || true
-ifconfig en1 2>&1 | grep -E '^(en1:|[[:space:]]*status:|[[:space:]]*inet )' || true
+echo '=== Running OpenCore version (if available) ==='
+nvram '4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version' 2>&1 || true
 echo ''
-echo '=== Default route ==='
-route -n get default 2>&1 | grep -E 'gateway:|interface:|not in table|Network is unreachable' || true
+echo '=== Volumes ==='
+ls -1 /Volumes 2>&1
 echo ''
-echo '=== DNS servers ==='
-scutil --dns 2>&1 | grep 'nameserver\[' | head -3 || true
+echo '=== Disks and partitions ==='
+diskutil list 2>&1 | head -65
 echo ''
-echo '=== HTTPS checks (HTTP 200/301/403/404 all mean server responded) ==='
-for URL in https://www.apple.com/ https://osrecovery.apple.com/ https://mesu.apple.com/ https://raw.githubusercontent.com/Ricardot14/ricardot14.github.io/master/i.txt
+echo '=== APFS containers (non-destructive) ==='
+diskutil apfs list 2>&1 | head -85
+echo ''
+echo '=== Installer bundles on mounted volumes ==='
+FOUND=0
+for A in /Volumes/*/'Install macOS Monterey.app' /Applications/'Install macOS Monterey.app'
 do
-  echo "Checking $URL"
-  curl -L -sS --connect-timeout 7 --max-time 17 -o /dev/null -w 'HTTP %{http_code}\n' "$URL" 2>&1 || echo "curl failed (see message above)"
+  if [ -d "$A" ]; then
+    FOUND=1
+    echo "Installer: $A"
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$A/Contents/Info.plist" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$A/Contents/Info.plist" 2>/dev/null || true
+    for P in "$A/Contents/SharedSupport/SharedSupport.dmg" "$A/Contents/SharedSupport/InstallESD.dmg" "$A/Contents/SharedSupport.dmg"
+    do
+      if [ -f "$P" ]; then ls -lh "$P"; fi
+    done
+  fi
 done
+if [ "$FOUND" -eq 0 ]; then echo 'No visible installer app (USB may not be mounted in this OS).'; fi
 echo ''
-echo '=== Installer volume (read only) ==='
-diskutil info '/Volumes/MLU-Monterey' 2>&1 | grep -E 'Volume Name:|Mounted:|Mount Point:|File System Personality:|Disk Size:|Volume Total Space:' || true
+echo '=== Recent installer errors from /var/log/install.log ==='
+if [ -r /var/log/install.log ]; then
+  grep -Ei 'OSISPredicate|No product found|Prepare recovery|OSInstallerSetup|error code|Error Domain|product fetch|Fetching OS Recovery' /var/log/install.log | tail -35 || true
+else
+  echo 'No readable /var/log/install.log here.'
+fi
 echo ''
-echo 'NO DISK OR NETWORK SETTINGS CHANGED.'
+echo 'READ-ONLY DIAGNOSTIC COMPLETE. Sierra and partitions unchanged.'
