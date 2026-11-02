@@ -1,61 +1,9 @@
 #!/bin/sh
-# Monterey UltraLite - obtain full Apple-signed installer on macOS Sierra.
-# Downloads to ~/Downloads only. Never alters USB, EFI, OS, or partitions.
-set -eu
-echo '=== MONTEREY: FRESH APPLE INSTALLER DOWNLOAD ==='
-OS="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
-echo "Running OS: $OS"
-if [ "$OS" != '10.12.6' ]; then
-  echo 'STOP: Boot Macintosh HD (macOS Sierra 10.12.6), open Terminal, and rerun the SAME short link.'
-  echo 'Do not run this download in Monterey USB Recovery.'
-  exit 2
-fi
-MODEL="$(sysctl -n hw.model 2>/dev/null || true)"
-if [ "$MODEL" != iMac10,1 ]; then
-  echo "STOP: Expected 2009 iMac10,1, found $MODEL."
-  exit 2
-fi
-DIR="$HOME/Downloads"
-mkdir -p "$DIR"
-PKG="$DIR/Monterey-12.7.6-Apple-InstallAssistant.pkg"
-URL='https://swcdn.apple.com/content/downloads/24/16/062-40406-A_LQ4WW26M04/j7bl9ygay5prezturwh72ai10fvseh2uhw/InstallAssistant.pkg'
-CHECK=0
-if [ -f "$PKG" ]; then
-  BYTES="$(stat -f %z "$PKG" 2>/dev/null || echo 0)"
-  if [ "$BYTES" -gt 10000000000 ] && pkgutil --check-signature "$PKG" > /tmp/mlu-pkg-sig.txt 2>&1 && grep -Eq 'Apple Inc\.|Apple Software Update Certificate Authority' /tmp/mlu-pkg-sig.txt; then
-    CHECK=1
-    echo 'Found existing large Apple-signed package; skipping download.'
-  fi
-fi
-if [ "$CHECK" -ne 1 ]; then
-  FREEKB="$(df -Pk "$DIR" | awk 'NR==2 { print $4 }')"
-  case "$FREEKB" in ''|*[!0-9]*) echo 'STOP: Cannot measure Sierra free space'; exit 3;; esac
-  echo "Available on Sierra volume (KiB): $FREEKB"
-  if [ "$FREEKB" -lt 28000000 ]; then
-    echo 'STOP: Need approximately 28 GB of free Sierra space to download and unpack the installer safely.'
-    echo 'No changes made. Do not erase Sierra.'
-    exit 3
-  fi
-  echo 'Downloading Monterey 12.7.6 (~12GB) DIRECTLY from swcdn.apple.com.'
-  echo 'Resume supported: if interrupted, rerun the SAME short link.'
-  if ! curl --fail --location --retry 3 --connect-timeout 20 --continue-at - --output "$PKG" "$URL"; then
-    echo 'STOP: Download failed. Partial package kept for resume; no system changes.'
-    exit 4
-  fi
-fi
-echo '=== Verifying downloaded file ==='
-BYTES="$(stat -f %z "$PKG" 2>/dev/null || echo 0)"
-echo "Package bytes: $BYTES"
-if [ "$BYTES" -lt 10000000000 ]; then
-  echo 'STOP: File is unexpectedly small; not accepted as a full macOS installer.'
-  exit 5
-fi
-if ! pkgutil --check-signature "$PKG"; then
-  echo 'STOP: Package signature check FAILED. Do not install this package.'
-  exit 6
-fi
-echo ''
-echo '=== APPLE-SIGNED MONTEREY PACKAGE SAVED ==='
-echo "$PKG"
-echo 'No USB erase, EFI write, partition modification, or OS installation was performed.'
-echo 'Next: extract the verified installer app and recreate only the Kingston USB.'
+# Monterey UltraLite safe pause: user declined full installer download and restart.
+# No automatic repairs or downloads. Never alter Sierra, USB EFI, or partition layout.
+echo '=== MONTEREY: SAFE PAUSE ==='
+echo 'Full Apple installer download is disabled.'
+echo 'No changes made to Sierra, MLU-Monterey, USB, OpenCore or network.'
+echo 'Current USB installer produced Invalid argument when reading a resource file.'
+echo 'No safe unattended installation is possible until the installer source is verified or replaced.'
+echo 'You can shut down safely or boot Sierra. Do not erase the internal disk.'
