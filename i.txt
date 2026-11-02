@@ -1,46 +1,12 @@
 #!/bin/sh
-# Monterey UltraLite: SECOND-STAGE read-only diagnostics.
-# Compatible with macOS Recovery bash/sh. No erases, writes, or OS installs.
-echo '=== MONTEREY DIAGNOSTIC STAGE 2 ==='
-echo '=== Date, OS, hardware ==='
-date
-sw_vers 2>&1
-sysctl hw.model 2>&1
-echo ''
-echo '=== Running OpenCore version (if available) ==='
-nvram '4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:OCLP-Version' 2>&1 || true
-echo ''
-echo '=== Volumes ==='
-ls -1 /Volumes 2>&1
-echo ''
-echo '=== Disks and partitions ==='
-diskutil list 2>&1 | head -65
-echo ''
-echo '=== APFS containers (non-destructive) ==='
-diskutil apfs list 2>&1 | head -85
-echo ''
-echo '=== Installer bundles on mounted volumes ==='
-FOUND=0
-for A in /Volumes/*/'Install macOS Monterey.app' /Applications/'Install macOS Monterey.app'
-do
-  if [ -d "$A" ]; then
-    FOUND=1
-    echo "Installer: $A"
-    /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$A/Contents/Info.plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$A/Contents/Info.plist" 2>/dev/null || true
-    for P in "$A/Contents/SharedSupport/SharedSupport.dmg" "$A/Contents/SharedSupport/InstallESD.dmg" "$A/Contents/SharedSupport.dmg"
-    do
-      if [ -f "$P" ]; then ls -lh "$P"; fi
-    done
-  fi
-done
-if [ "$FOUND" -eq 0 ]; then echo 'No visible installer app (USB may not be mounted in this OS).'; fi
-echo ''
-echo '=== Recent installer errors from /var/log/install.log ==='
-if [ -r /var/log/install.log ]; then
-  grep -Ei 'OSISPredicate|No product found|Prepare recovery|OSInstallerSetup|error code|Error Domain|product fetch|Fetching OS Recovery' /var/log/install.log | tail -35 || true
-else
-  echo 'No readable /var/log/install.log here.'
-fi
-echo ''
-echo 'READ-ONLY DIAGNOSTIC COMPLETE. Sierra and partitions unchanged.'
+# Monterey UltraLite stable launcher. Always pull current job with cache buster.
+# This launcher never changes disks or EFI.
+set -eu
+echo 'MONTEREY LAUNCHER v1: fetching newest diagnostic'
+URL="https://raw.githubusercontent.com/Ricardot14/ricardot14.github.io/master/job.txt?v=$(date +%s)"
+OUT="/tmp/mlu-job.$$"
+trap 'rm -f "$OUT"' EXIT HUP INT TERM
+curl -fLsS --connect-timeout 10 --max-time 90 "$URL" -o "$OUT" || { echo 'Download failed; nothing executed.'; exit 1; }
+head -n 1 "$OUT" | grep -q '^#!/bin/sh' || { echo 'Invalid script content; nothing executed.'; exit 1; }
+echo 'Latest job downloaded. Executing:'
+/bin/sh "$OUT"
