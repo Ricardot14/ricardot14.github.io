@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/bin/sh
 # Monterey UltraLite: rebuild installer ONLY on Kingston USB, preserve USB EFI.
 # Use from Sierra 10.12.6 on verified iMac10,1. No internal disk changes.
-set -euo pipefail
+set -eu
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 stop(){ echo "STOP: $*" >&2; exit 1; }
 echo '=== MONTEREY KINGSTON USB REBUILD ==='
